@@ -14,14 +14,14 @@ Dependencies
 Citation
 --------
 
-A tutorial paper associated with this package will be made avalable soon. Please cite this if you use **electrography** in your work.
+A tutorial paper associated with this package will be made available soon. Please cite this if you use **electrography** in your work.
 
 - *Citation to follow!*
 
 Example Data Acquisition
 ========================
 
-```.python
+```python
 import time
 from electrography.boards import OpenBCI
 
@@ -44,8 +44,9 @@ board.close()
 Example Data Analysis
 =====================
 
-```.python
-from openbci.data import read_file, get_physiology, hampel, butter_bandpass_filter, movement_filter
+```python
+from openbci.data import read_file, get_physiology, hampel, \
+    butter_bandpass_filter, movement_filter
 
 raw = read_file(fpath)
 data, t, triggers, sampling_rate = get_physiology(raw, "ganglion")
