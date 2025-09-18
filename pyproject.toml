@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "electrography"
-version = "1.0.3"
+version = "1.1.0"
 description = "Python package to record and analyse data from OpenBCI boards"
 readme = "README.md"
 requires-python = ">=3.9"
@@ -18,7 +18,7 @@ classifiers = [
   "Programming Language :: Python :: 3",
   "License :: OSI Approved :: Apache Software License",
 ]
-dependencies = ["brainflow", "matplotlib", "numpy", "scipy"]
+dependencies = ["brainflow", "numpy", "scipy", "scikit-learn"]
 
 [project.urls]
 "Homepage" = "https://www.dalmaijer.org"

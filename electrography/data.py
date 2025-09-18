@@ -11,7 +11,7 @@ import numpy
 import scipy.fft
 from scipy.optimize import minimize
 import scipy.signal
-from matplotlib import pyplot
+from sklearn.decomposition import FastICA
 
 from brainflow.board_shim import BoardShim, BoardIds
 from brainflow.data_filter import DataFilter
@@ -34,7 +34,7 @@ def _run_single_channel(cython_function, channel_data, i, data_queue, *args):
     return 0
 
 
-def parallelise_cython(data, cython_function, *args):
+def _parallelise_cython(data, cython_function, *args):
     n_jobs = data.shape[0]
     data_queue = Queue()
     processes = []
@@ -184,10 +184,10 @@ def get_physiology(raw, board):
     return data, t, m, sampling_rate
 
 
-def butter_bandpass(lowcut, highcut, fs, order=5, sos=True):
-    nyq = 0.5 * fs
-    low = lowcut / nyq
-    high = highcut / nyq
+def _butter_bandpass(high_pass, low_pass, sampling_rate, order=5, sos=True):
+    nyq = 0.5 * sampling_rate
+    low = high_pass / nyq
+    high = low_pass / nyq
     if sos:
         output = "sos"
     else:
@@ -196,37 +196,71 @@ def butter_bandpass(lowcut, highcut, fs, order=5, sos=True):
         btype='band', output=output)
     return filt
 
-def butter_bandpass_filter(data, lowcut, highcut, fs, order=5, \
-    bidirectional=False):
-    sos = butter_bandpass(lowcut, highcut, fs, order=order, sos=True)
+def butter_bandpass_filter(data, high_pass, low_pass, sampling_rate, order=5, \
+    bidirectional=True):
+    
+    """Performs a Butterworth filter using cascaded second-order sections 
+    (sos), which is a digital IIR (infinite impulse response) filter. The 
+    filter can be applied unidirectionally (only forwards) or bidirectionally 
+    (forwards and again backwards). The bidirectional option is for zero-lag 
+    (zero-phase) filtering, which should be used if you care about the timing 
+    of signals across different frequency bands (e.g. if you're comparing an 
+    ECG signal with an EEG signal).
+    
+    Arguments
+    
+    data:
+        type: numpy.ndarray
+        desc: a NumPy array with shape (M,N), where M is the number of 
+            channels and N the number of samples.
+
+    high_pass:
+        type: float
+        desc: The frequency (in Hz) above which data will be let through. This 
+            is the lower cutoff of the band through which signal is allowed.
+
+    low_pass:
+        type: float
+        desc: The frequency (in Hz) below which data will be let through. This 
+            is the higher cutoff of the band through which signal is allowed.
+
+    sampling_rate:
+        type: float
+        desc: The sampling rate (in Hz) that the passed data was acquired with.
+
+    Keyword Arguments
+
+    order:
+        type: int
+        desc: The order of the filter. See scipy.signal.iirfilter for details 
+            on the implementation. (Default = 5)
+
+    bidirectional:
+        type: bool
+        desc: When set to True, the data will be run through the filter twice: 
+            one forwards and once in reverse. This ensures zero-lag, which is 
+            crucial for comparisons between signals that are filtered through 
+            different bands. (Default = True)
+    """
+    
+    sos = _butter_bandpass(high_pass, low_pass, sampling_rate, order=order, \
+        sos=True)
     if bidirectional:
-        y = scipy.signal.sosfiltfilt(sos, data)
+        signal = scipy.signal.sosfiltfilt(sos, data)
     else:
-        y = scipy.signal.sosfilt(sos, data)
-    return y
+        signal = scipy.signal.sosfilt(sos, data)
+    return signal
 
 
 def hampel(data, k=3, n_sigma=3.0, force_python=False):
-    # Use the sped-up cython function if available.
-    if _cython_function_available and not force_python:
-        if len(data.shape) == 1:
-            signal = hampel_cython(data, k, n_sigma)
-        else:
-            signal = parallelise_cython(data, hampel_cython, [k, n_sigma])
-        return signal
-    # Fall back on the (slower) Python function if we can't use the speedy one.
-    else:
-        return hampel_python(data, k=k, n_sigma=n_sigma)
 
-def hampel_python(data, k=3, n_sigma=3.0):
-    
     """Performs a Hampel filtering, a median based outlier rejection in which
     outliers are detected based on a local median, and are replaced by that
     median (local median is determined in a moving window).
     
     Arguments
     
-    signal:
+    data:
         type: numpy.ndarray
         desc: a NumPy array with shape (M,N), where M is the number of 
             channels and N the number of samples.
@@ -244,6 +278,19 @@ def hampel_python(data, k=3, n_sigma=3.0):
         desc: Number of standard deviations a sample can be away from a local
             median before it is replaced by that local median. (Default = 3)
     """
+    
+    # Use the sped-up cython function if available.
+    if _cython_function_available and not force_python:
+        if len(data.shape) == 1:
+            signal = hampel_cython(data, k, n_sigma)
+        else:
+            signal = _parallelise_cython(data, hampel_cython, [k, n_sigma])
+        return signal
+    # Fall back on the (slower) Python function if we can't use the speedy one.
+    else:
+        return hampel_python(data, k=k, n_sigma=n_sigma)
+
+def hampel_python(data, k=3, n_sigma=3.0):
     
     # Create a local copy of the data in which values will be filtered.
     signal = numpy.copy(data)
@@ -272,27 +319,15 @@ def hampel_python(data, k=3, n_sigma=3.0):
     return signal
 
 
-def movement_filter(data, sfreq, freq=0.05, window=1.0):
-    # Use the sped-up cython function if available.
-    if _cython_function_available:
-        if len(data.shape) == 1:
-            x_hat = movement_filter_cython(data, sfreq, freq, window)
-        else:
-            x_hat = parallelise_cython(data, movement_filter_cython, \
-                [sfreq, freq, window])
-        signal = data - x_hat
-        return signal, x_hat
-    # Fall back on the (slower) Python function if we can't use the speedy one.
-    else:
-        return movement_filter_python(data, sfreq, freq=freq, window=window)
+def movement_filter(data, sampling_rate, frequency_of_interest, window=1.0, \
+    force_python=False):
 
-# The implementation for this movement filter comes from:
-# Gharibans, Smarr, Kunkel, Kriegsfeld, Mousa, & Coleman (2018). Artifact 
-#   Rejection Methodology Enables Continuous, Noninvasive Measurement of 
-#   Gastric Myoelectric Activity in Ambulatory Subjects. Scientific Reports,
-#   8:5019, doi:10.1038/s41598-018-23302-9
-def movement_filter_python(data, sfreq, freq=0.05, window=1.0):
-    """Applies an LMMSE filter to reduce movement artefacts.
+    """Applies an LMMSE filter to reduce movement artefacts. For details of 
+    this procedure, see:
+    Gharibans, Smarr, Kunkel, Kriegsfeld, Mousa, & Coleman (2018). Artifact 
+        Rejection Methodology Enables Continuous, Noninvasive Measurement of 
+        Gastric Myoelectric Activity in Ambulatory Subjects. Scientific 
+        Reports, 8:5019, doi:10.1038/s41598-018-23302-9
     
     Arguments
     
@@ -301,24 +336,45 @@ def movement_filter_python(data, sfreq, freq=0.05, window=1.0):
         desc: A NumPy array with shane (M,N) where M is the number of channels
            and N the number of observations (samples).
     
-    sfreq:
+    sampling_rate:
         type: float
         desc: Sampling frequency for the board. (From the board description; or
             check timestamps in time array to compute empirical sampling rate.)
 
+    frequency_of_interest:
+        type: float
+        desc: Frequency of interest in Herz. For example, in gastric signal 
+        the main frequency is 3 cycles per minute, which is 0.05 Hz.
+    
     Keyword Arguments
 
-    freq:
-        type: float
-        desc: Frequency of interest in Herz. For gastric signal, the main
-            frequency is at 3 cycles per minute, which is 0.05 Hz. (Default
-            is 0.05 Hz)
-    
     window:
         type: float
         desc: Window length in cylces of the frequency of interest. (Default 
             is 1.0)
     """
+
+    # Use the sped-up cython function if available.
+    if _cython_function_available and not force_python:
+        if len(data.shape) == 1:
+            x_hat = movement_filter_cython(data, sampling_rate, \
+                frequency_of_interest, window)
+        else:
+            x_hat = _parallelise_cython(data, movement_filter_cython, \
+                [sampling_rate, frequency_of_interest, window])
+        signal = data - x_hat
+        return signal, x_hat
+    # Fall back on the (slower) Python function if we can't use the speedy one.
+    else:
+        return movement_filter_python(data, sampling_rate, \
+            freq=frequency_of_interest, window=window)
+
+# This is a Python implementation for the movement filter from:
+# Gharibans, Smarr, Kunkel, Kriegsfeld, Mousa, & Coleman (2018). Artifact 
+#   Rejection Methodology Enables Continuous, Noninvasive Measurement of 
+#   Gastric Myoelectric Activity in Ambulatory Subjects. Scientific Reports,
+#   8:5019, doi:10.1038/s41598-018-23302-9
+def movement_filter_python(data, sfreq, freq=0.05, window=1.0):
 
     # Compute the window size in seconds.
     win_sec = window * (1.0 / freq)
@@ -366,6 +422,99 @@ def movement_filter_python(data, sfreq, freq=0.05, window=1.0):
     
     return e, x_hat
 
+
+def ica_denoise(data, sampling_rate, high_pass, low_pass, bounds_of_interest, \
+    snr_threshold=3.0, random_state=None):
+
+    """This function denoises the data by decomposing it using independent 
+    component analysis. For each component, the peak power within the bounds 
+    of interest is considered the signal. The noise is computed as the average 
+    power outside of the bounds of interest. Components with a signal-to-noise 
+    ratio below the set threshold will be zero'd out. After this, the signal 
+    is reconstituted into its original space.
+    
+    Arguments
+    
+    data:
+        type: numpy.ndarray
+        desc: a NumPy array with shape (M,N), where M is the number of 
+            channels and N the number of samples.
+
+    sampling_rate:
+        type: float
+        desc: The sampling rate (in Hz) that the passed data was acquired with.
+
+    high_pass:
+        type: float
+        desc: The frequency (in Hz) above which data will be let through. This 
+            is the lower cutoff of the band through which signal is allowed.
+
+    low_pass:
+        type: float
+        desc: The frequency (in Hz) below which data will be let through. This 
+            is the higher cutoff of the band through which signal is allowed.
+    
+    bounds_of_interest:
+        type: list
+        desc: The frequencies (in Hz) between which data is considered 
+            "signal". For example, in electrogastrography this would be 
+            2-4 cpm, so in Hz you would pass [0.033, 0.067]
+
+    Keyword Arguments
+
+    snr_threshold:
+        type: float
+        desc: The signal-to-noise threshold below which components will be
+            excluded. (Default = 3.0)
+
+    random_state:
+        type: int
+        desc: The random seed that will be used for the FastICA initialisation. 
+            FastICA is stochastic, but passing a number allows for reproducible
+            results. Pass None to not set a random state. (Default = None)
+    """
+
+    # Do an ICA decomposition of the signal. Note that this requires 
+    # transposing the data from (n_channels, n_samples) to 
+    # (n_samples, n_channels) to work with the FastICA class.
+    ica = FastICA(random_state=random_state)
+    ica_components = ica.fit_transform(data.T).T
+    # Loop through all identified components.
+    n_filtered_channels = 0
+    for channel in range(ica_components.shape[0]):
+        # Compute the signal magnitude for this component.
+        f, p = compute_signal_magnitude(ica_components[channel,:], \
+            ica_components.shape[1], sampling_rate, high_pass, low_pass)
+        # Compute peak power in between the bounds of interest. This is 
+        # considered the "signal".
+        sel = (f >= bounds_of_interest[0]) & (f <= bounds_of_interest[1])
+        p_signal = numpy.nanmax(p[sel])
+        # Compute the mean power outside of the bounds of interest. This is
+        # considered the "noise".
+        p_noise = numpy.nanmean(p[numpy.invert(sel)])
+        # Zero out this component if the signal-noise ratio is too low.
+        snr = p_signal / p_noise
+        if snr < snr_threshold:
+            ica_components[channel,:] = 0.0
+            n_filtered_channels += 1
+    # Check if we have any components left.
+    ica_denoising_success = n_filtered_channels < data.shape[0]
+    if ica_denoising_success:
+        # Recombine the components into the original signal space now that
+        # non-gastric components have been filtered out.
+        signal = ica.inverse_transform(ica_components.T).T
+        # Due to previous transposition, we need to ensure the array is
+        # C-contiguous. This is necessary for our Cythonised functions, which 
+        # assume C-contiguous arrays for improved efficiency. (This step is 
+        # optional if you do not use the Cythonised functions, but it does not 
+        # take up much time, so for safety it's applied per default.)
+        signal = numpy.ascontiguousarray(signal)
+    else:
+        signal = None
+    
+    return signal
+
+
 def compute_signal_magnitude(signal, n, sampling_rate, high_pass, low_pass):
     # If the number of samples in the signal is fewer than the anticipated 
     # number, it will be zero-padded. In this case, applying a filter to 
@@ -396,19 +545,19 @@ def spectrogram(data, sampling_rate, segment_secs, mode="magnitude"):
 
     if (len(data.shape) == 1):
         freqs, times, power = scipy.signal.spectrogram(data, \
-            fs=sampling_rate, nperseg=n_per_segment, scaling="spectrum", \
+            sampling_rate=sampling_rate, nperseg=n_per_segment, scaling="spectrum", \
             mode=mode)
     else:
         freqs, times, power_ = scipy.signal.spectrogram(data[0,:], \
-            fs=sampling_rate, nperseg=n_per_segment, scaling="spectrum", \
+            sampling_rate=sampling_rate, nperseg=n_per_segment, scaling="spectrum", \
             mode=mode)
         shape = (data.shape[0], power_.shape[0], power_.shape[1])
         power = numpy.zeros(shape, dtype=numpy.float64)
         power[0,:,:] = power_
         for channel in range(1, data.shape[0]):
             _, _, power[channel,:,:] = scipy.signal.spectrogram( \
-                data[channel,:], fs=sampling_rate, nperseg=n_per_segment, \
-                scaling="spectrum", mode=mode)
+                data[channel,:], sampling_rate=sampling_rate, \
+                nperseg=n_per_segment, scaling="spectrum", mode=mode)
     
     return freqs, times, power
 
