@@ -252,7 +252,13 @@ def butter_bandpass_filter(data, high_pass, low_pass, sampling_rate, order=5, \
     return signal
 
 
-def hampel(data, k=3, n_sigma=3.0, force_python=False):
+def hampel(*args, **kwargs):
+    """For documentation, see hampel_filter. This function exists for
+    backwards compatability, as `hampel_filter` used to be `hampel`.
+    """
+    return hampel_filter(*args, **kwargs)
+
+def hampel_filter(data, k=3, n_sigma=3.0, force_python=False):
 
     """Performs a Hampel filtering, a median based outlier rejection in which
     outliers are detected based on a local median, and are replaced by that
@@ -277,6 +283,13 @@ def hampel(data, k=3, n_sigma=3.0, force_python=False):
         type: float
         desc: Number of standard deviations a sample can be away from a local
             median before it is replaced by that local median. (Default = 3)
+    
+    force_python:
+        type: bool
+        desc: This function has a Cython and a Python implementation. Setting 
+            force_python to True ensures that the Python implementation is 
+            used. This is likely slower, although the Hampel filter is 
+            actually faster in Python for very large windows. (Default = False)
     """
     
     # Use the sped-up cython function if available.
@@ -319,6 +332,42 @@ def hampel_python(data, k=3, n_sigma=3.0):
     return signal
 
 
+def mad_filter(data, n_sigma=3.0):
+
+    """Filters on the basis of mean absolute deviation (MAD), replacing values
+    that deviate too far from the median by the median. This is akin to what
+    happens within the window of a Hampel filter, but without its window 
+    sliding across the timeseries. This makes the MAD filter much faster but
+    also more sensitive to signal drift.
+    
+    Arguments
+    
+    data:
+        type: numpy.ndarray
+        desc: a NumPy array with shape (M,N), where M is the number of 
+            channels and N the number of samples.
+
+    Keyword Arguments
+
+    n_sigma:
+        type: float
+        desc: Number of standard deviations a sample can be away from the
+            median before it is replaced by that local median. (Default = 3)
+    """
+    
+    signal = numpy.copy(data)
+    med = numpy.nanmedian(signal, axis=1, keepdims=True)
+    d = numpy.abs(signal - med)
+    d_med = numpy.nanmedian(d, axis=1)
+    sd = 1.4826 * d_med
+    threshold = n_sigma * sd
+    for channel in range(signal.shape[0]):
+        replace = d[channel,:] > threshold[channel]
+        signal[channel,replace] = med[channel]
+    
+    return signal
+
+
 def movement_filter(data, sampling_rate, frequency_of_interest, window=1.0, \
     force_python=False):
 
@@ -352,6 +401,12 @@ def movement_filter(data, sampling_rate, frequency_of_interest, window=1.0, \
         type: float
         desc: Window length in cylces of the frequency of interest. (Default 
             is 1.0)
+    
+    force_python:
+        type: bool
+        desc: This function has a Cython and a Python implementation. Setting 
+            force_python to True ensures that the Python implementation is 
+            used. Note that this will be much slower. (Default = False)
     """
 
     # Use the sped-up cython function if available.

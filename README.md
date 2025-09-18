@@ -68,7 +68,7 @@ m_per_channel = numpy.nanmean(data, axis=1, keepdims=True)
 data = data - m_per_channel
 
 # Hampel-filter the data.
-data = hampel(data, k=2000, n_sigma=3)
+data = hampel_filter(data, k=2000, n_sigma=3)
 
 # Filter the data for EGG frequencies.
 for channel in range(data.shape[0]):

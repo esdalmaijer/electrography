@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "electrography"
-version = "1.1.0"
+version = "1.1.1"
 description = "Python package to record and analyse data from OpenBCI boards"
 readme = "README.md"
 requires-python = ">=3.9"
