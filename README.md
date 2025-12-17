@@ -45,7 +45,7 @@ Example Data Analysis
 =====================
 
 ```python
-from openbci.data import read_file, get_physiology, hampel, \
+from electrography.data import read_file, get_physiology, hampel, \
     butter_bandpass_filter, movement_filter
 
 # Set the low (high-pass) and high (low-pass) bounds for the data (EGG). For 
